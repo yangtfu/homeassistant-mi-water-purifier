@@ -4,8 +4,6 @@ import logging
 
 import voluptuous as vol
 
-from config.custom_components.mi_water_purifier.const import DOMAIN, SENSORS
-from config.custom_components.mi_water_purifier.coordinator import MiioCoordinator
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
     SensorEntity,
@@ -24,6 +22,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN, SENSORS
+from .coordinator import MiioCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 

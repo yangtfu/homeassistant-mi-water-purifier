@@ -1,7 +1,7 @@
 {
   "domain": "mi_water_purifier",
   "name": "XiaoMi Water Purifier",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "documentation": "https://github.com/yangtfu/homeassistant-mi-water-purifier",
   "requirements": [
     "python-miio>=0.5.12"
