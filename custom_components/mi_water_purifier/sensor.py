@@ -1,192 +1,86 @@
 """Support for Xiaomi water purifier."""
-import math
+
 import logging
 
-from homeassistant.const import (CONF_NAME, CONF_HOST, CONF_TOKEN, CONF_UNIQUE_ID)
-from homeassistant.helpers.entity import Entity
-from homeassistant.exceptions import PlatformNotReady
-from miio import Device, DeviceException
-from datetime import timedelta
+import voluptuous as vol
 
-SCAN_INTERVAL = timedelta(seconds=5)
+from config.custom_components.mi_water_purifier.const import DOMAIN, SENSORS
+from config.custom_components.mi_water_purifier.coordinator import MiioCoordinator
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_SCAN_INTERVAL,
+    CONF_TOKEN,
+    CONF_UNIQUE_ID,
+    PERCENTAGE,
+)
+from homeassistant.core import HomeAssistant, callback
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
 _LOGGER = logging.getLogger(__name__)
 
-TAP_WATER_QUALITY = {'name': 'Tap water', 'key': 'ttds'}
-FILTERED_WATER_QUALITY = {'name': 'Filtered water', 'key': 'ftds'}
-PP_COTTON_FILTER_REMAINING = {'name': 'PP cotton filter', 'key': 'pfd', 'days_key': 'pfp'}
-FRONT_ACTIVE_CARBON_FILTER_REMAINING = {'name': 'Front active carbon filter', 'key': 'fcfd', 'days_key': 'fcfp'}
-RO_FILTER_REMAINING = {'name': 'RO filter', 'key': 'rfd', 'days_key': 'rfp'}
-REAR_ACTIVE_CARBON_FILTER_REMAINING = {'name': 'Rear active carbon filter', 'key': 'rcfd', 'days_key': 'rcfp'}
+# Validation of the user's configuration
+SENSOR_PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_HOST): cv.string,
+        vol.Required(CONF_TOKEN): cv.string,
+        vol.Optional(CONF_SCAN_INTERVAL): cv.time_period,
+        vol.Optional(CONF_UNIQUE_ID): cv.string,
+    }
+)
 
 
-def setup_platform(hass, config, add_devices, discovery_info=None):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Perform the setup for Xiaomi water purifier."""
-
-    host = config.get(CONF_HOST)
-    name = config.get(CONF_NAME)
-    token = config.get(CONF_TOKEN)
-    unique_id = config.get(CONF_UNIQUE_ID)
-
-    _LOGGER.info("Initializing Xiaomi water purifier with host %s (token %s...)", host, token[:5])
-
-    devices = []
-    try:
-        device = Device(host, token)
-        waterPurifier = XiaomiWaterPurifier(device, name, unique_id)
-        devices.append(waterPurifier)
-        devices.append(XiaomiWaterPurifierSensor(waterPurifier, TAP_WATER_QUALITY, unique_id))
-        devices.append(XiaomiWaterPurifierSensor(waterPurifier, FILTERED_WATER_QUALITY, unique_id))
-        devices.append(XiaomiWaterPurifierSensor(waterPurifier, PP_COTTON_FILTER_REMAINING, unique_id))
-        devices.append(XiaomiWaterPurifierSensor(waterPurifier, FRONT_ACTIVE_CARBON_FILTER_REMAINING, unique_id))
-        devices.append(XiaomiWaterPurifierSensor(waterPurifier, RO_FILTER_REMAINING, unique_id))
-        devices.append(XiaomiWaterPurifierSensor(waterPurifier, REAR_ACTIVE_CARBON_FILTER_REMAINING, unique_id))
-    except DeviceException:
-        _LOGGER.exception('Fail to setup Xiaomi water purifier')
-        raise PlatformNotReady
-
-    add_devices(devices)
+    coordinator = MiioCoordinator(hass, config)
+    # await coordinator.async_config_entry_first_refresh()
+    add_entities([XiaomiWaterPurifierSensor(coordinator, name) for name in SENSORS])
 
 
-class XiaomiWaterPurifierSensor(Entity):
+class XiaomiWaterPurifierSensor(SensorEntity, CoordinatorEntity):
     """Representation of a XiaomiWaterPurifierSensor."""
 
-    def __init__(self, waterPurifier, data_key, unique_id):
+    def __init__(self, coordinator: MiioCoordinator, name: str) -> None:
         """Initialize the XiaomiWaterPurifierSensor."""
-        self._state = None
-        self._data = None
-        self._waterPurifier = waterPurifier
-        self._data_key = data_key
-        self._attr_unique_id = unique_id + '_' + data_key['key']
-        self.parse_data()
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._data_key['name']
-
-    @property
-    def icon(self):
-        """Icon to use in the frontend, if any."""
-        if self._data_key['key'] is TAP_WATER_QUALITY['key'] or \
-                self._data_key['key'] is FILTERED_WATER_QUALITY['key']:
-            return 'mdi:water'
+        super().__init__(coordinator)
+        self._attr_should_poll = False
+        self.name = name
+        self._attr_unique_id = f"{coordinator.info.data['mac']}-{name}"
+        self._attr_device_info = DeviceInfo(
+            name="Xiaomi water purifier",
+            manufacturer="Xiaomi",
+            model=coordinator.info.data["model"],
+            sw_version=coordinator.info.data["fw_ver"],
+            identifiers={
+                (
+                    DOMAIN,
+                    self.unique_id,
+                )
+            },
+        )
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        if "TDS" in self.name:
+            self._attr_icon = "mdi:water"
         else:
-            return 'mdi:filter-outline'
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_icon = "mdi:filter-outline"
 
-    @property
-    def state(self):
-        """Return the state of the device."""
-        return self._state
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement of this entity, if any."""
-        if self._data_key['key'] is TAP_WATER_QUALITY['key'] or \
-                self._data_key['key'] is FILTERED_WATER_QUALITY['key']:
-            return 'TDS'
-        return '%'
-
-    @property
-    def device_state_attributes(self):
-        """Return the state attributes of the last update."""
-        attrs = {}
-
-        if self._data_key['key'] is PP_COTTON_FILTER_REMAINING['key'] or \
-                self._data_key['key'] is FRONT_ACTIVE_CARBON_FILTER_REMAINING['key'] or \
-                self._data_key['key'] is RO_FILTER_REMAINING['key'] or \
-                self._data_key['key'] is REAR_ACTIVE_CARBON_FILTER_REMAINING['key']:
-            attrs[self._data_key['name']] = '{} days remaining'.format(self._data[self._data_key['days_key']])
-
-        return attrs
-
-    def parse_data(self):
-        if self._waterPurifier._data:
-            self._data = self._waterPurifier._data
-            self._state = self._data[self._data_key['key']]
-
-    def update(self):
+    @callback
+    def _handle_coordinator_update(self):
         """Get the latest data and updates the states."""
-        self.parse_data()
-
-
-class XiaomiWaterPurifier(Entity):
-    """Representation of a XiaomiWaterPurifier."""
-
-    def __init__(self, device, name, unique_id):
-        """Initialize the XiaomiWaterPurifier."""
-        self._state = None
-        self._device = device
-        self._name = name
-        self._attr_unique_id = unique_id
-        self.parse_data()
-
-    @property
-    def name(self):
-        """Return the name of the device."""
-        return self._name
-
-    @property
-    def icon(self):
-        """Icon to use in the frontend, if any."""
-        return 'mdi:water'
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement of this entity, if any."""
-        return 'TDS'
-
-    @property
-    def state(self):
-        """Return the state of the device."""
-        return self._state
-
-    @property
-    def hidden(self) -> bool:
-        """Return True if the entity should be hidden from UIs."""
-        return True
-
-    @property
-    def device_state_attributes(self):
-        """Return the state attributes of the last update."""
-        attrs = {}
-        attrs[TAP_WATER_QUALITY['name']] = '{}TDS'.format(self._data[TAP_WATER_QUALITY['key']])
-        attrs[PP_COTTON_FILTER_REMAINING['name']] = '{}%'.format(self._data[PP_COTTON_FILTER_REMAINING['key']])
-        attrs[FRONT_ACTIVE_CARBON_FILTER_REMAINING['name']] = '{}%'.format(
-            self._data[FRONT_ACTIVE_CARBON_FILTER_REMAINING['key']])
-        attrs[RO_FILTER_REMAINING['name']] = '{}%'.format(self._data[RO_FILTER_REMAINING['key']])
-        attrs[REAR_ACTIVE_CARBON_FILTER_REMAINING['name']] = '{}%'.format(
-            self._data[REAR_ACTIVE_CARBON_FILTER_REMAINING['key']])
-
-        return attrs
-
-    def parse_data(self):
-        """Parse data."""
-        try:
-            data = {}
-            status = self._device.send('get_prop', [])
-            data[TAP_WATER_QUALITY['key']] = status[0]
-            data[FILTERED_WATER_QUALITY['key']] = status[1]
-            pfd = int((status[11] - status[3]) / 24)
-            data[PP_COTTON_FILTER_REMAINING['days_key']] = pfd
-            data[PP_COTTON_FILTER_REMAINING['key']] = math.floor(pfd * 24 * 100 / status[11])
-            fcfd = int((status[13] - status[5]) / 24)
-            data[FRONT_ACTIVE_CARBON_FILTER_REMAINING['days_key']] = fcfd
-            data[FRONT_ACTIVE_CARBON_FILTER_REMAINING['key']] = math.floor(fcfd * 24 * 100 / status[13])
-            rfd = int((status[15] - status[7]) / 24)
-            data[RO_FILTER_REMAINING['days_key']] = rfd
-            data[RO_FILTER_REMAINING['key']] = math.floor(rfd * 24 * 100 / status[15])
-            rcfd = int((status[17] - status[9]) / 24)
-            data[REAR_ACTIVE_CARBON_FILTER_REMAINING['days_key']] = rcfd
-            data[REAR_ACTIVE_CARBON_FILTER_REMAINING['key']] = math.floor(rcfd * 24 * 100 / status[17])
-
-            self._data = data
-            self._state = self._data[FILTERED_WATER_QUALITY['key']]
-        except DeviceException:
-            _LOGGER.exception('Fail to get_prop from Xiaomi water purifier')
-            self._data = None
-            self._state = None
-            raise PlatformNotReady
-
-    def update(self):
-        """Get the latest data and updates the states."""
-        self.parse_data()
+        _LOGGER.debug("[%s] updated", self.name)
+        self._attr_native_value = self.coordinator.data[self.name][0]
+        self.async_write_ha_state()
